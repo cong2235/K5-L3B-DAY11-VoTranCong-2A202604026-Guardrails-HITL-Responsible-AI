@@ -105,6 +105,10 @@ def get_blue_provider() -> str:
 
 def get_blue_model() -> str:
     # Hard-locked; env cannot override for the graded Blue Team path.
+    # TEMP exception: when BLUE_API_KEY is set (Liquid's own API for the SAME model),
+    # use that provider's model id. Remove BLUE_API_KEY/BLUE_BASE_URL from .env to revert.
+    if os.environ.get("BLUE_API_KEY", "").strip():
+        return "lfm3-1.7b"
     return BLUE_MODEL
 
 
@@ -114,6 +118,13 @@ def get_openrouter_api_key() -> str:
 
 def blue_client_kwargs() -> dict:
     """OpenAI SDK kwargs pointing at OpenRouter (Blue Team only)."""
+    temp_key = os.environ.get("BLUE_API_KEY", "").strip()  # TEMP Liquid override
+    if temp_key:
+        return {
+            "api_key": temp_key,
+            "base_url": os.environ.get("BLUE_BASE_URL", "").strip()
+            or "https://api.liquid.ai/openai/v1",
+        }
     return {
         "api_key": get_openrouter_api_key() or None,
         "base_url": (

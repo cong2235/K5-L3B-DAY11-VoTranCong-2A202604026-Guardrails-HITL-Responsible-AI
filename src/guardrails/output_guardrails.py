@@ -12,6 +12,7 @@ from google.adk.agents import llm_agent
 from google.adk import runners
 from google.adk.plugins import base_plugin
 
+from core.config import DEMO_SECRETS
 from core.utils import chat_with_agent
 
 
@@ -40,20 +41,27 @@ def content_filter(response: str) -> dict:
     redacted = response
 
     # PII patterns to check
+    # Order matters: password/api_key first so their values are not re-matched
+    # as phone / national_id digits.
     PII_PATTERNS = {
-        # TODO: Add regex patterns for:
-        # - VN phone number: r"0\d{9,10}"
-        # - Email: r"[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}"
-        # - National ID (CMND/CCCD): r"\b\d{9}\b|\b\d{12}\b"
-        # - API key pattern: r"sk-[a-zA-Z0-9-]+"
-        # - Password pattern: r"password\s*[:=]\s*\S+"
+        "password": r"password\s*(?:[:=]|is)\s*\S+",
+        "api_key": r"sk-[a-zA-Z0-9-]+",
+        "email": r"[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}",
+        "phone": r"(?<!\d)0\d{9,10}(?!\d)",
+        "national_id": r"\b\d{9}\b|\b\d{12}\b",
     }
 
     for name, pattern in PII_PATTERNS.items():
-        matches = re.findall(pattern, response, re.IGNORECASE)
+        matches = re.findall(pattern, redacted, re.IGNORECASE)
         if matches:
             issues.append(f"{name}: {len(matches)} found")
             redacted = re.sub(pattern, "[REDACTED]", redacted, flags=re.IGNORECASE)
+
+    # Literal demo secrets (e.g. db host, bare admin password) that regex can miss
+    for secret in DEMO_SECRETS:
+        if secret and secret.lower() in redacted.lower():
+            issues.append("secret: 1 found")
+            redacted = re.sub(re.escape(secret), "[REDACTED]", redacted, flags=re.IGNORECASE)
 
     return {
         "safe": len(issues) == 0,
@@ -181,7 +189,28 @@ class OutputGuardrailPlugin(base_plugin.BasePlugin):
         #    - Increment self.blocked_count
         # 3. Return llm_response (possibly modified)
 
-        return llm_response  # TODO: modify if needed
+        result = content_filter(response_text)
+        if not result["safe"]:
+            self.redacted_count += 1
+            llm_response.content = types.Content(
+                role="model",
+                parts=[types.Part.from_text(text=result["redacted"])],
+            )
+            response_text = result["redacted"]
+
+        if self.use_llm_judge:
+            verdict = await llm_safety_check(response_text)
+            if not verdict["safe"]:
+                self.blocked_count += 1
+                llm_response.content = types.Content(
+                    role="model",
+                    parts=[types.Part.from_text(
+                        text="I'm sorry, I can't provide that response. "
+                             "Please ask me about VinBank banking services."
+                    )],
+                )
+
+        return llm_response
 
 
 # ============================================================
